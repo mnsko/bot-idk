@@ -1,9 +1,10 @@
 import discord
+from discord import Embed
 import requests
 import json
 import os
 import asyncio  # Import asyncio for creating delays
-from config import API_KEY, GAME_NAME, TAG_LINE, REGION_PUUID, REGION_LEAGUE, DISCORD_TOKEN
+from config import API_KEY, ACCOUNTS, REGION_PUUID, REGION_LEAGUE, DISCORD_TOKEN
 
 LAST_MATCH_FILE = 'last_match.txt'
 
@@ -71,32 +72,31 @@ def get_match_details(match_id):
         print(f"Error getting match details: {response.json()}")
         return None
 
-# Load the last match ID
-def load_last_match():
-    if os.path.exists(LAST_MATCH_FILE):
-        with open(LAST_MATCH_FILE, 'r') as f:
+# Load the last match ID for a specific account
+def load_last_match(game_name, tag_line):
+    filename = f"{game_name}_{tag_line}.txt"
+    if os.path.exists(filename):
+        with open(filename, 'r') as f:
             return f.read().strip()
     return None
 
-# Save the new match ID
-def save_last_match(match_id):
-    with open(LAST_MATCH_FILE, 'w') as f:
+# Save the new match ID for a specific account
+def save_last_match(game_name, tag_line, match_id):
+    filename = f"{game_name}_{tag_line}.txt"
+    with open(filename, 'w') as f:
         f.write(match_id)
 
-async def check_match(channel):
-    # Step 1: Fetch PUUID
-    puuid = get_puuid(GAME_NAME, TAG_LINE)
+async def check_match(channel, game_name, tag_line):
+    puuid = get_puuid(game_name, tag_line)
 
     if puuid:
-        # Step 2: Fetch recent match ID
-        last_match_id = load_last_match()
+        last_match_id = load_last_match(game_name, tag_line)
         recent_matches = get_recent_match_ids(puuid)
 
         if recent_matches:
             recent_match_id = recent_matches[0]
 
             if recent_match_id != last_match_id:
-                # Step 3: Fetch match details
                 match_details = get_match_details(recent_match_id)
                 if match_details:
                     participant = next(p for p in match_details['info']['participants'] if p['puuid'] == puuid)
@@ -105,82 +105,62 @@ async def check_match(channel):
                     kills = participant['kills']
                     deaths = participant['deaths']
                     assists = participant['assists']
-
-                    # Get the queue ID and map it to a game mode
+                    match_duration = match_details['info']['gameDuration']
+                    farm = participant['totalMinionsKilled']
                     queue_id = match_details['info']['queueId']
                     game_mode = QUEUE_ID_MAP.get(queue_id, "Unknown Mode")
 
-                    # Create output message
-                    message = "=== New Match Found ===\n"
-                    message += f"Game Mode: {game_mode}\n"  # Add game mode to the message
-                    message += f"Result: {'Win' if win else 'Loss'}\n"
-                    message += f"Champion: {champion}\n"
-                    message += f"KDA: {kills}/{deaths}/{assists}\n"
-                    message += "========================"
+                    # Create an embed for the match details
+                    embed = Embed(title=f"New Match for {game_name}#{tag_line}", color=discord.Color.green() if win else discord.Color.red())
+                    embed.add_field(name="Game Mode", value=game_mode, inline=False)
+                    embed.add_field(name="Result", value="Victory" if win else "Defeat", inline=True)
+                    embed.add_field(name="Champion", value=champion, inline=True)
+                    embed.add_field(name="KDA", value=f"{kills}/{deaths}/{assists}", inline=True)
+                    embed.add_field(name="Duration", value=f"{match_duration // 60}m {match_duration % 60}s", inline=True)
+                    embed.add_field(name="Farm (CS)", value=str(farm), inline=True)
 
-                    # Send message to Discord channel
-                    await channel.send(message)
+                    # Send the embed to Discord channel
+                    await channel.send(embed=embed)
 
-                    # Step 4: Save the new match ID
-                    save_last_match(recent_match_id)
+                    # Save the new match ID
+                    save_last_match(game_name, tag_line, recent_match_id)
 
-                # Step 5: Fetch encrypted summoner ID
+                # Fetch and send league entries
                 encrypted_summoner_id = get_encrypted_summoner_id(puuid)
-
                 if encrypted_summoner_id:
-                    # Step 6: Fetch league entries
                     league_entries = get_league_entries(encrypted_summoner_id)
-
                     if league_entries:
-                        # Prepare league message
-                        league_message = ""
-                        # Separate entries into solo and flex
-                        solo_entry = None
-                        flex_entry = None
-
+                        league_embed = Embed(title=f"Ranked Stats for {game_name}#{tag_line}", color=discord.Color.blue())
+                        
                         for entry in league_entries:
-                            # Check for Solo and Flex ranks
-                            if entry['queueType'] == 'RANKED_SOLO_5x5':
-                                solo_entry = entry
-                            elif entry['queueType'] == 'RANKED_FLEX_SR':
-                                flex_entry = entry
-
-                        # Print Solo entry first
-                        if solo_entry:
-                            wins = solo_entry['wins']
-                            losses = solo_entry['losses']
-                            lp = solo_entry.get('leaguePoints', 0)  # Get LP if available
-
+                            queue_type = "Solo/Duo" if entry['queueType'] == 'RANKED_SOLO_5x5' else "Flex"
+                            wins = entry['wins']
+                            losses = entry['losses']
                             total_matches = wins + losses
                             win_rate = (wins / total_matches * 100) if total_matches > 0 else 0
+                            
+                            league_embed.add_field(
+                                name=f"{queue_type} Queue",
+                                value=f"{entry['tier']} {entry['rank']} {entry['leaguePoints']}LP\n"
+                                      f"W/L: {wins}/{losses}\n"
+                                      f"Win Rate: {win_rate:.2f}%",
+                                inline=False
+                            )
+                        
+                        await channel.send(embed=league_embed)
 
-                            league_message += f"soloq: {solo_entry['tier']} {solo_entry['rank']} {lp}LP, {wins}W/{losses}L, {win_rate:.2f}% Win Rate\n"
-
-                        # Print Flex entry second
-                        if flex_entry:
-                            wins = flex_entry['wins']
-                            losses = flex_entry['losses']
-                            lp = flex_entry.get('leaguePoints', 0)  # Get LP if available
-
-                            total_matches = wins + losses
-                            win_rate = (wins / total_matches * 100) if total_matches > 0 else 0
-
-                            league_message += f"flex: {flex_entry['tier']} {flex_entry['rank']} {lp}LP, {wins}W/{losses}L, {win_rate:.2f}% Win Rate\n"
-
-                        await channel.send(league_message)
-
-        # If no recent matches found, do nothing
     else:
-        await channel.send("Unable to get PUUID.")
+        await channel.send(f"Unable to get PUUID for {game_name}#{tag_line}.")
+
 
 @client.event
 async def on_ready():
     print(f'Logged in as {client.user}')
     channel = client.get_channel(1292776026178588806)
-    
-    while True:  # Create an infinite loop
-        await check_match(channel)  # Check for new matches
-        await asyncio.sleep(20)  # Wait for 60 seconds before checking again
 
-# Replace 'your_token_here' with your Discord bot token
+    while True:  # Create an infinite loop
+        for game_name, tag_line in ACCOUNTS:
+            await check_match(channel, game_name, tag_line)  # Check for new matches for each account
+        await asyncio.sleep(20)  # Wait before checking again
+
 client.run(DISCORD_TOKEN)
