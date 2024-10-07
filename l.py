@@ -3,13 +3,12 @@ from discord import Embed
 import requests
 import json
 import os
-import asyncio  # Import asyncio for creating delays
+import asyncio
 from config import API_KEY, ACCOUNTS, REGION_PUUID, REGION_LEAGUE, DISCORD_TOKEN
-
-LAST_MATCH_FILE = 'last_match.txt'
 
 # Set up Discord client
 intents = discord.Intents.default()
+intents.message_content = True
 client = discord.Client(intents=intents)
 
 # Queue ID mapping to game mode
@@ -86,6 +85,73 @@ def save_last_match(game_name, tag_line, match_id):
     with open(filename, 'w') as f:
         f.write(match_id)
 
+# New function to rank players
+def rank_players(league_entries):
+    rank_order = {
+        'CHALLENGER': 0, 'GRANDMASTER': 1, 'MASTER': 2, 'DIAMOND': 3,
+        'EMERALD': 4, 'PLATINUM': 5, 'GOLD': 6, 'SILVER': 7, 'BRONZE': 8, 'IRON': 9
+    }
+    division_order = {'I': 0, 'II': 1, 'III': 2, 'IV': 3, 'V': 4}
+    
+    def rank_key(entry):
+        if not entry:
+            return (float('inf'), 0, 0)
+        return (rank_order.get(entry['tier'], float('inf')),
+                division_order.get(entry['rank'], 0),
+                -entry['leaguePoints'])
+    
+    return sorted(league_entries, key=rank_key)
+
+# New function to format ranked stats
+def format_ranked_stats(ranked_players, queue_type):
+    formatted = f"**{queue_type}**\n"
+    for player in ranked_players:
+        if player:
+            formatted += f"{player['summonerName']}: **{player['tier']} {player['rank']} {player['leaguePoints']}LP**\n"
+        else:
+            formatted += f"Unranked\n"
+    return formatted.strip()
+
+async def update_ranked_stats(channel):
+    all_solo_entries = []
+    all_flex_entries = []
+    
+    for game_name, tag_line in ACCOUNTS:
+        puuid = get_puuid(game_name, tag_line)
+        if puuid:
+            encrypted_summoner_id = get_encrypted_summoner_id(puuid)
+            if encrypted_summoner_id:
+                league_entries = get_league_entries(encrypted_summoner_id)
+                solo_entry = next((entry for entry in league_entries if entry['queueType'] == 'RANKED_SOLO_5x5'), None)
+                flex_entry = next((entry for entry in league_entries if entry['queueType'] == 'RANKED_FLEX_SR'), None)
+                
+                if solo_entry:
+                    solo_entry['summonerName'] = f"{game_name}#{tag_line}"
+                    all_solo_entries.append(solo_entry)
+                else:
+                    all_solo_entries.append(None)  # Add None for unranked players
+
+                if flex_entry:
+                    flex_entry['summonerName'] = f"{game_name}#{tag_line}"
+                    all_flex_entries.append(flex_entry)
+                else:
+                    all_flex_entries.append(None)  # Add None for unranked players
+    
+    ranked_solo = rank_players(all_solo_entries)
+    ranked_flex = rank_players(all_flex_entries)
+    
+    solo_stats = format_ranked_stats(ranked_solo, "Solo/Duo Queue")
+    flex_stats = format_ranked_stats(ranked_flex, "Flex Queue")
+    
+    embed = Embed(title="Ranked Stats", color=discord.Color.blue())
+    embed.add_field(name="Solo/Duo Queue", value=solo_stats, inline=False)
+    embed.add_field(name="Flex Queue", value=flex_stats, inline=False)
+    
+    # Delete previous messages and send the new one
+    async for message in channel.history(limit=None):
+        await message.delete()
+    await channel.send(embed=embed)
+
 async def check_match(channel, game_name, tag_line):
     puuid = get_puuid(game_name, tag_line)
 
@@ -110,7 +176,6 @@ async def check_match(channel, game_name, tag_line):
                     queue_id = match_details['info']['queueId']
                     game_mode = QUEUE_ID_MAP.get(queue_id, "Unknown Mode")
 
-                    # Create an embed for the match details
                     embed = Embed(title=f"New Match for {game_name}#{tag_line}", color=discord.Color.green() if win else discord.Color.red())
                     embed.add_field(name="Game Mode", value=game_mode, inline=False)
                     embed.add_field(name="Result", value="Victory" if win else "Defeat", inline=True)
@@ -119,48 +184,22 @@ async def check_match(channel, game_name, tag_line):
                     embed.add_field(name="Duration", value=f"{match_duration // 60}m {match_duration % 60}s", inline=True)
                     embed.add_field(name="Farm (CS)", value=str(farm), inline=True)
 
-                    # Send the embed to Discord channel
                     await channel.send(embed=embed)
 
-                    # Save the new match ID
                     save_last_match(game_name, tag_line, recent_match_id)
-
-                # Fetch and send league entries
-                encrypted_summoner_id = get_encrypted_summoner_id(puuid)
-                if encrypted_summoner_id:
-                    league_entries = get_league_entries(encrypted_summoner_id)
-                    if league_entries:
-                        league_embed = Embed(title=f"Ranked Stats for {game_name}#{tag_line}", color=discord.Color.blue())
-                        
-                        for entry in league_entries:
-                            queue_type = "Solo/Duo" if entry['queueType'] == 'RANKED_SOLO_5x5' else "Flex"
-                            wins = entry['wins']
-                            losses = entry['losses']
-                            total_matches = wins + losses
-                            win_rate = (wins / total_matches * 100) if total_matches > 0 else 0
-                            
-                            league_embed.add_field(
-                                name=f"{queue_type} Queue",
-                                value=f"{entry['tier']} {entry['rank']} {entry['leaguePoints']}LP\n"
-                                      f"W/L: {wins}/{losses}\n"
-                                      f"Win Rate: {win_rate:.2f}%",
-                                inline=False
-                            )
-                        
-                        await channel.send(embed=league_embed)
-
     else:
         await channel.send(f"Unable to get PUUID for {game_name}#{tag_line}.")
-
 
 @client.event
 async def on_ready():
     print(f'Logged in as {client.user}')
-    channel = client.get_channel(1292776026178588806)
+    match_channel = client.get_channel(1292776026178588806)
+    ranked_channel = client.get_channel(1292804209795792937)
 
-    while True:  # Create an infinite loop
+    while True:
         for game_name, tag_line in ACCOUNTS:
-            await check_match(channel, game_name, tag_line)  # Check for new matches for each account
-        await asyncio.sleep(20)  # Wait before checking again
+            await check_match(match_channel, game_name, tag_line)
+        await update_ranked_stats(ranked_channel)
+        await asyncio.sleep(60)  # Check every 60 seconds
 
 client.run(DISCORD_TOKEN)
