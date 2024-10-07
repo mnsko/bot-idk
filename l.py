@@ -4,6 +4,7 @@ import requests
 import json
 import os
 import asyncio
+import time
 from config import API_KEY, ACCOUNTS, REGION_PUUID, REGION_LEAGUE, DISCORD_TOKEN
 
 # Set up Discord client
@@ -20,6 +21,11 @@ QUEUE_ID_MAP = {
     430: "Normal Blind",
     # Add more queueId mappings as needed
 }
+
+# Global variables for ranked stats update
+last_update_time = 0
+last_ranked_stats = None
+UPDATE_INTERVAL = 30  # 30 seconds
 
 # Step 1: Get PUUID using Riot ID
 def get_puuid(game_name, tag_line):
@@ -123,10 +129,18 @@ def format_ranked_stats(ranked_players, queue_type):
         if player:
             formatted += f"{player['summonerName']}: **{player['tier']} {player['rank']} {player['leaguePoints']}LP**\n"
         else:
-            formatted += f"Unranked\n"
+            # Find the corresponding account for this unranked player
+            unranked_player = next((f"{name}#{tag}" for name, tag in ACCOUNTS if f"{name}#{tag}" not in [p['summonerName'] for p in ranked_players if p]), "Unknown Player")
+            formatted += f"{unranked_player}: **Unranked**\n"
     return formatted.strip()
 
 async def update_ranked_stats(channel):
+    global last_update_time, last_ranked_stats
+    current_time = time.time()
+    
+    if current_time - last_update_time < UPDATE_INTERVAL:
+        return  # Skip update if not enough time has passed
+    
     all_solo_entries = []
     all_flex_entries = []
     
@@ -141,9 +155,6 @@ async def update_ranked_stats(channel):
 
                 last_lp_data = load_last_lp(game_name, tag_line)
                 
-                solo_lp_changed = False
-                flex_lp_changed = False
-
                 if solo_entry:
                     solo_entry['summonerName'] = f"{game_name}#{tag_line}"
                     all_solo_entries.append(solo_entry)
@@ -151,7 +162,6 @@ async def update_ranked_stats(channel):
                     # Compare LP for Solo Queue
                     last_solo_lp = last_lp_data.get('solo', {}).get('lp', None)
                     if last_solo_lp is not None and last_solo_lp != solo_entry['leaguePoints']:
-                        solo_lp_changed = True
                         await channel.send(f"**{game_name}#{tag_line}** has {'gained' if solo_entry['leaguePoints'] > last_solo_lp else 'lost'} LP in **Solo Queue**!\n"
                                            f"Current LP: **{solo_entry['leaguePoints']} LP**")
                     
@@ -168,7 +178,6 @@ async def update_ranked_stats(channel):
                     # Compare LP for Flex Queue
                     last_flex_lp = last_lp_data.get('flex', {}).get('lp', None)
                     if last_flex_lp is not None and last_flex_lp != flex_entry['leaguePoints']:
-                        flex_lp_changed = True
                         await channel.send(f"**{game_name}#{tag_line}** has {'gained' if flex_entry['leaguePoints'] > last_flex_lp else 'lost'} LP in **Flex Queue**!\n"
                                            f"Current LP: **{flex_entry['leaguePoints']} LP**")
                     
@@ -181,22 +190,28 @@ async def update_ranked_stats(channel):
                 # Save the updated LP data
                 save_last_lp(game_name, tag_line, last_lp_data)
     
-    # Only send the updated ranked stats if there's any LP change
-    if solo_lp_changed or flex_lp_changed:
-        ranked_solo = rank_players(all_solo_entries)
-        ranked_flex = rank_players(all_flex_entries)
-        
-        solo_stats = format_ranked_stats(ranked_solo, "Solo/Duo Queue")
-        flex_stats = format_ranked_stats(ranked_flex, "Flex Queue")
-        
+    ranked_solo = rank_players(all_solo_entries)
+    ranked_flex = rank_players(all_flex_entries)
+    
+    new_ranked_stats = (format_ranked_stats(ranked_solo, "Solo/Duo Queue"), 
+                        format_ranked_stats(ranked_flex, "Flex Queue"))
+    
+    if new_ranked_stats != last_ranked_stats:
         embed = Embed(title="Ranked Stats", color=discord.Color.blue())
-        embed.add_field(name="Solo/Duo Queue", value=solo_stats, inline=False)
-        embed.add_field(name="Flex Queue", value=flex_stats, inline=False)
+        embed.add_field(name="Solo/Duo Queue", value=new_ranked_stats[0], inline=False)
+        embed.add_field(name="Flex Queue", value=new_ranked_stats[1], inline=False)
         
-        # Delete previous messages and send the new one
-        async for message in channel.history(limit=None):
-            await message.delete()
-        await channel.send(embed=embed)
+        # Find and edit the existing message, or send a new one if not found
+        async for message in channel.history(limit=10):
+            if message.author == client.user and message.embeds and message.embeds[0].title == "Ranked Stats":
+                await message.edit(embed=embed)
+                break
+        else:
+            await channel.send(embed=embed)
+        
+        last_ranked_stats = new_ranked_stats
+    
+    last_update_time = current_time
 
 async def check_match(channel, game_name, tag_line):
     puuid = get_puuid(game_name, tag_line)
@@ -248,6 +263,6 @@ async def on_ready():
         for game_name, tag_line in ACCOUNTS:
             await check_match(match_channel, game_name, tag_line)
         await update_ranked_stats(ranked_channel)
-        await asyncio.sleep(60)  # Check every 60 seconds
+        await asyncio.sleep(30)  # Check every 30 seconds
 
 client.run(DISCORD_TOKEN)
