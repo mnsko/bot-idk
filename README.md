@@ -19,7 +19,7 @@ This Discord bot tracks League of Legends matches and ranked stats for specified
 
 1. Clone this repository:
    ```
-   git clone https://github.com/your-username/lol-discord-bot.git
+   git clone https://github.com/MNSKcze/bot-idk
    cd lol-discord-bot
    ```
 
@@ -28,7 +28,7 @@ This Discord bot tracks League of Legends matches and ranked stats for specified
    pip install discord.py requests
    ```
 
-3. Create a `config.py` file in the project directory with the following content:
+3. Edit a config.py file
    ```python
    API_KEY = "YOUR_RIOT_API_KEY"
    ACCOUNTS = [
@@ -42,6 +42,7 @@ This Discord bot tracks League of Legends matches and ranked stats for specified
    ```
 
    Replace `YOUR_RIOT_API_KEY` with your Riot Games API key and `YOUR_DISCORD_BOT_TOKEN` with your Discord bot token.
+   Replace `europe` and `eun1` with your regions.
 
 ## Configuration
 
@@ -75,7 +76,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License.
 
 ## Disclaimer
 
