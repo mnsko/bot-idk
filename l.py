@@ -162,8 +162,8 @@ async def update_ranked_stats(channel):
                     # Compare LP for Solo Queue
                     last_solo_lp = last_lp_data.get('solo', {}).get('lp', None)
                     if last_solo_lp is not None and last_solo_lp != solo_entry['leaguePoints']:
-                        await channel.send(f"**{game_name}#{tag_line}** has {'gained' if solo_entry['leaguePoints'] > last_solo_lp else 'lost'} LP in **Solo Queue**!\n"
-                                           f"Current LP: **{solo_entry['leaguePoints']} LP**")
+                            # LP has changed, but no message is sent
+                            pass
                     
                     last_lp_data['solo'] = {
                         'lp': solo_entry['leaguePoints']
@@ -178,8 +178,8 @@ async def update_ranked_stats(channel):
                     # Compare LP for Flex Queue
                     last_flex_lp = last_lp_data.get('flex', {}).get('lp', None)
                     if last_flex_lp is not None and last_flex_lp != flex_entry['leaguePoints']:
-                        await channel.send(f"**{game_name}#{tag_line}** has {'gained' if flex_entry['leaguePoints'] > last_flex_lp else 'lost'} LP in **Flex Queue**!\n"
-                                           f"Current LP: **{flex_entry['leaguePoints']} LP**")
+                        # LP has changed, but no message is sent
+                        pass
                     
                     last_lp_data['flex'] = {
                         'lp': flex_entry['leaguePoints']
@@ -256,8 +256,8 @@ async def check_match(channel, game_name, tag_line):
 @client.event
 async def on_ready():
     print(f'Logged in as {client.user}')
-    match_channel = client.get_channel(1292776026178588806)
-    ranked_channel = client.get_channel(1292804209795792937)
+    match_channel = client.get_channel()  # Channel ID where will be new matches
+    ranked_channel = client.get_channel() # Channel ID where is the ranks of players
 
     while True:
         for game_name, tag_line in ACCOUNTS:
