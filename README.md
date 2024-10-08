@@ -20,7 +20,7 @@ This Discord bot tracks League of Legends matches and ranked stats for specified
 1. Clone this repository:
    ```
    git clone https://github.com/MNSKcze/bot-idk
-   cd lol-discord-bot
+   cd bot-idk
    ```
 
 2. Install the required packages:
