@@ -5,7 +5,12 @@ import json
 import os
 import asyncio
 import time
+import logging
+import fcntl
 from config import API_KEY, ACCOUNTS, REGION_PUUID, REGION_LEAGUE, DISCORD_TOKEN
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Set up Discord client
 intents = discord.Intents.default()
@@ -27,6 +32,9 @@ last_update_time = 0
 last_ranked_stats = None
 UPDATE_INTERVAL = 30  # 30 seconds
 
+# Global dictionary to store the last processed time for each player
+last_processed_time = {}
+
 # Step 1: Get PUUID using Riot ID
 def get_puuid(game_name, tag_line):
     url = f"https://{REGION_PUUID}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{game_name}/{tag_line}?api_key={API_KEY}"
@@ -34,7 +42,7 @@ def get_puuid(game_name, tag_line):
     if response.status_code == 200:
         return response.json()['puuid']
     else:
-        print(f"Error getting PUUID: {response.json()}")
+        logging.error(f"Error getting PUUID: {response.json()}")
         return None
 
 # Step 2: Get recent match IDs using PUUID
@@ -44,7 +52,7 @@ def get_recent_match_ids(puuid):
     if response.status_code == 200:
         return response.json()
     else:
-        print(f"Error getting recent match IDs: {response.json()}")
+        logging.error(f"Error getting recent match IDs: {response.json()}")
         return []
 
 # Step 3: Get encrypted summoner ID using PUUID
@@ -54,7 +62,7 @@ def get_encrypted_summoner_id(puuid):
     if response.status_code == 200:
         return response.json()['id']
     else:
-        print(f"Error getting encrypted summoner ID: {response.json()}")
+        logging.error(f"Error getting encrypted summoner ID: {response.json()}")
         return None
 
 # Step 4: Get league entries using encrypted summoner ID
@@ -64,7 +72,7 @@ def get_league_entries(summoner_id):
     if response.status_code == 200:
         return response.json()
     else:
-        print(f"Error getting league entries: {response.json()}")
+        logging.error(f"Error getting league entries: {response.json()}")
         return []
 
 # Step 5: Get match details
@@ -74,7 +82,7 @@ def get_match_details(match_id):
     if response.status_code == 200:
         return response.json()
     else:
-        print(f"Error getting match details: {response.json()}")
+        logging.error(f"Error getting match details: {response.json()}")
         return None
 
 # Load the last match ID for a specific account
@@ -89,7 +97,9 @@ def load_last_match(game_name, tag_line):
 def save_last_match(game_name, tag_line, match_id):
     filename = f"{game_name}_{tag_line}.txt"
     with open(filename, 'w') as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
         f.write(match_id)
+        fcntl.flock(f, fcntl.LOCK_UN)
 
 # Load the last LP data for a specific account
 def load_last_lp(game_name, tag_line):
@@ -162,8 +172,7 @@ async def update_ranked_stats(channel):
                     # Compare LP for Solo Queue
                     last_solo_lp = last_lp_data.get('solo', {}).get('lp', None)
                     if last_solo_lp is not None and last_solo_lp != solo_entry['leaguePoints']:
-                        await channel.send(f"**{game_name}#{tag_line}** has {'gained' if solo_entry['leaguePoints'] > last_solo_lp else 'lost'} LP in **Solo Queue**!\n"
-                                           f"Current LP: **{solo_entry['leaguePoints']} LP**")
+                        logging.info(f"Solo Queue LP changed for {game_name}#{tag_line}: {last_solo_lp} -> {solo_entry['leaguePoints']}")
                     
                     last_lp_data['solo'] = {
                         'lp': solo_entry['leaguePoints']
@@ -178,8 +187,7 @@ async def update_ranked_stats(channel):
                     # Compare LP for Flex Queue
                     last_flex_lp = last_lp_data.get('flex', {}).get('lp', None)
                     if last_flex_lp is not None and last_flex_lp != flex_entry['leaguePoints']:
-                        await channel.send(f"**{game_name}#{tag_line}** has {'gained' if flex_entry['leaguePoints'] > last_flex_lp else 'lost'} LP in **Flex Queue**!\n"
-                                           f"Current LP: **{flex_entry['leaguePoints']} LP**")
+                        logging.info(f"Flex Queue LP changed for {game_name}#{tag_line}: {last_flex_lp} -> {flex_entry['leaguePoints']}")
                     
                     last_lp_data['flex'] = {
                         'lp': flex_entry['leaguePoints']
@@ -214,50 +222,69 @@ async def update_ranked_stats(channel):
     last_update_time = current_time
 
 async def check_match(channel, game_name, tag_line):
+    logging.debug(f"Checking match for {game_name}#{tag_line}")
+    
+    # Check cooldown period
+    current_time = time.time()
+    if game_name in last_processed_time and current_time - last_processed_time[game_name] < 300:  # 5 minutes cooldown
+        logging.debug(f"Cooldown period active for {game_name}#{tag_line}")
+        return
+
     puuid = get_puuid(game_name, tag_line)
 
     if puuid:
         last_match_id = load_last_match(game_name, tag_line)
+        logging.debug(f"Last match ID for {game_name}#{tag_line}: {last_match_id}")
         recent_match_ids = get_recent_match_ids(puuid)
         
         if recent_match_ids:
             recent_match_id = recent_match_ids[0]
+            logging.debug(f"Most recent match ID for {game_name}#{tag_line}: {recent_match_id}")
 
             if last_match_id != recent_match_id:
-                match_details = get_match_details(recent_match_id)
+                # Double-check before processing
+                if load_last_match(game_name, tag_line) != recent_match_id:
+                    logging.info(f"New match confirmed for {game_name}#{tag_line}")
+                    match_details = get_match_details(recent_match_id)
 
-                if match_details:
-                    participant = next(p for p in match_details['info']['participants'] if p['puuid'] == puuid)
-                    game_mode = QUEUE_ID_MAP.get(match_details['info']['queueId'], "Unknown")
+                    if match_details:
+                        participant = next(p for p in match_details['info']['participants'] if p['puuid'] == puuid)
+                        game_mode = QUEUE_ID_MAP.get(match_details['info']['queueId'], "Unknown")
 
-                    if game_mode in ["Ranked Solo", "Ranked Flex"]:
-                        win_or_loss = "won" if participant['win'] else "lost"
-                        champ_name = participant['championName']
-                        score = f"{participant['kills']}/{participant['deaths']}/{participant['assists']}"
-                        
-                        # Create an embed for the message
-                        embed = discord.Embed(title=f"New Match for {game_name}#{tag_line}", color=discord.Color.green() if participant['win'] else discord.Color.red())
-                        embed.add_field(name="Game Mode", value=game_mode, inline=False)
-                        embed.add_field(name="Result", value="Victory" if participant['win'] else "Defeat", inline=True)
-                        embed.add_field(name="Champion", value=champ_name, inline=True)
-                        embed.add_field(name="KDA", value=score, inline=True)
-                        embed.add_field(name="Duration", value=f"{match_details['info']['gameDuration'] // 60}m {match_details['info']['gameDuration'] % 60}s", inline=True)
-                        embed.add_field(name="Farm (CS)", value=str(participant['totalMinionsKilled'] + participant['neutralMinionsKilled']), inline=True)
-                        
-                        await channel.send(embed=embed)
+                        if game_mode in ["Ranked Solo", "Ranked Flex"]:
+                            win_or_loss = "won" if participant['win'] else "lost"
+                            champ_name = participant['championName']
+                            score = f"{participant['kills']}/{participant['deaths']}/{participant['assists']}"
+                            
+                            # Create an embed for the message
+                            embed = discord.Embed(title=f"New Match for {game_name}#{tag_line}", color=discord.Color.green() if participant['win'] else discord.Color.red())
+                            embed.add_field(name="Game Mode", value=game_mode, inline=False)
+                            embed.add_field(name="Result", value="Victory" if participant['win'] else "Defeat", inline=True)
+                            embed.add_field(name="Champion", value=champ_name, inline=True)
+                            embed.add_field(name="KDA", value=score, inline=True)
+                            embed.add_field(name="Duration", value=f"{match_details['info']['gameDuration'] // 60}m {match_details['info']['gameDuration'] % 60}s", inline=True)
+                            embed.add_field(name="Farm (CS)", value=str(participant['totalMinionsKilled'] + participant['neutralMinionsKilled']), inline=True)
+                            
+                            await channel.send(embed=embed)
 
-                    # Save the new match ID
-                    save_last_match(game_name, tag_line, recent_match_id)
+                            # Save the new match ID
+                            save_last_match(game_name, tag_line, recent_match_id)
+                            logging.debug(f"Updated last match ID for {game_name}#{tag_line} to {recent_match_id}")
+                            
+                            # Update the last processed time
+                            last_processed_time[game_name] = current_time
+                else:
+                    logging.debug(f"Match {recent_match_id} was already processed for {game_name}#{tag_line}")
             else:
-                print(f"No new match for {game_name}#{tag_line}")
+                logging.debug(f"No new match for {game_name}#{tag_line}")
         else:
-            print(f"No matches found for {game_name}#{tag_line}")
+            logging.debug(f"No matches found for {game_name}#{tag_line}")
 
 @client.event
 async def on_ready():
-    print(f'Logged in as {client.user}')
-    match_channel = client.get_channel(1292776026178588806)
-    ranked_channel = client.get_channel(1292804209795792937)
+    logging.info(f'Logged in as {client.user}')
+    match_channel = client.get_channel(1292916252712636506)  # Channel ID where new matches will be posted
+    ranked_channel = client.get_channel(1292916197754404884) # Channel ID where ranks of players will be posted
 
     while True:
         for game_name, tag_line in ACCOUNTS:
