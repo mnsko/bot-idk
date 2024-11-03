@@ -25,7 +25,7 @@ QUEUE_ID_MAP = {
 # Global variables for ranked stats update
 last_update_time = 0
 last_ranked_stats = None
-UPDATE_INTERVAL = 30  # 30 seconds
+UPDATE_INTERVAL = 60  # 60 seconds
 
 # Step 1: Get PUUID using Riot ID
 def get_puuid(game_name, tag_line):
@@ -256,13 +256,13 @@ async def check_match(channel, game_name, tag_line):
 @client.event
 async def on_ready():
     print(f'Logged in as {client.user}')
-    match_channel = client.get_channel()  # Channel ID where will be new matches
-    ranked_channel = client.get_channel() # Channel ID where is the ranks of players
+    match_channel = client.get_channel(1292916252712636506)  # Channel ID where will be new matches
+    ranked_channel = client.get_channel(1292916197754404884) # Channel ID where is the ranks of players
 
     while True:
         for game_name, tag_line in ACCOUNTS:
             await check_match(match_channel, game_name, tag_line)
         await update_ranked_stats(ranked_channel)
-        await asyncio.sleep(30)  # Check every 30 seconds
+        await asyncio.sleep(60)  # Check every 60 seconds
 
 client.run(DISCORD_TOKEN)
