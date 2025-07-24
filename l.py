@@ -125,13 +125,20 @@ def rank_players(league_entries):
 # Format ranked stats for display
 def format_ranked_stats(ranked_players, queue_type):
     formatted = f"**{queue_type}**\n"
+
+    # Track which accounts have already been listed
+    used_accounts = {p['summonerName'] for p in ranked_players if p}
+
     for player in ranked_players:
         if player:
             formatted += f"{player['summonerName']}: **{player['tier']} {player['rank']} {player['leaguePoints']}LP**\n"
         else:
-            # Find the corresponding account for this unranked player
-            unranked_player = next((f"{name}#{tag}" for name, tag in ACCOUNTS if f"{name}#{tag}" not in [p['summonerName'] for p in ranked_players if p]), "Unknown Player")
+            # Find the next account that hasn't been used yet
+            remaining = [f"{name}#{tag}" for name, tag in ACCOUNTS if f"{name}#{tag}" not in used_accounts]
+            unranked_player = remaining[0] if remaining else "Unknown Player"
+            used_accounts.add(unranked_player)
             formatted += f"{unranked_player}: **Unranked**\n"
+
     return formatted.strip()
 
 async def update_ranked_stats(channel):
